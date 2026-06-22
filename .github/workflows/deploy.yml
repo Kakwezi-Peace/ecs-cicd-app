@@ -1,0 +1,76 @@
+name: Build and Push to ECR
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Build with Maven
+        run: mvn clean package -DskipTests -B
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::405894843300:role/GitHubActionsECSRole
+          aws-region: eu-north-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag and push image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ecs-cicd-lab-app
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Create appspec.json
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ecs-cicd-lab-app
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          cat > appspec.json << EOF
+          {
+            "version": 1,
+            "Resources": [
+              {
+                "TargetService": {
+                  "Type": "AWS::ECS::Service",
+                  "Properties": {
+                    "TaskDefinition": "<TASK_DEFINITION>",
+                    "LoadBalancerInfo": {
+                      "ContainerName": "ecs-cicd-lab-container",
+                      "ContainerPort": 8080
+                    }
+                  }
+                }
+              }
+            ]
+          }
+          EOF
