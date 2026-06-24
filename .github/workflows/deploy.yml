@@ -46,14 +46,45 @@ jobs:
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "IMAGE_URI=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      - name: Create appspec.json
+      - name: Create taskdef.json and appspec.json
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ecs-cicd-lab-app
-          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_URI: ${{ steps.build-image.outputs.image }}
         run: |
+          cat > taskdef.json << EOF
+          {
+            "family": "ecs-cicd-lab-task",
+            "networkMode": "awsvpc",
+            "requiresCompatibilities": ["FARGATE"],
+            "cpu": "256",
+            "memory": "512",
+            "executionRoleArn": "arn:aws:iam::405894843300:role/ecs-cicd-lab-ecs-execution-role",
+            "taskRoleArn": "arn:aws:iam::405894843300:role/ecs-cicd-lab-ecs-task-role",
+            "containerDefinitions": [
+              {
+                "name": "ecs-cicd-lab-container",
+                "image": "<IMAGE1_NAME>",
+                "portMappings": [
+                  {
+                    "containerPort": 8080,
+                    "protocol": "tcp"
+                  }
+                ],
+                "logConfiguration": {
+                  "logDriver": "awslogs",
+                  "options": {
+                    "awslogs-group": "/ecs/ecs-cicd-lab",
+                    "awslogs-region": "eu-north-1",
+                    "awslogs-stream-prefix": "ecs"
+                  }
+                },
+                "essential": true
+              }
+            ]
+          }
+          EOF
+
           cat > appspec.json << EOF
           {
             "version": 1,
@@ -73,3 +104,12 @@ jobs:
             ]
           }
           EOF
+
+      - name: Upload deployment files to S3
+        env:
+          IMAGE_URI: ${{ steps.build-image.outputs.image }}
+        run: |
+          sed -i "s|<IMAGE1_NAME>|$IMAGE_URI|g" taskdef.json
+          zip deploy-artifacts.zip taskdef.json appspec.json
+          aws s3 cp deploy-artifacts.zip s3://ecs-cicd-lab-artifacts-405894843300/deploy-artifacts.zip
+          echo "Files uploaded to S3 successfully"
